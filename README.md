@@ -1,132 +1,533 @@
-# VPN Setup Script
+#!/bin/bash
 
-Автоматическая установка и настройка VPN-сервера на Debian с использованием:
-- **Xray** (VLESS + REALITY, Shadowsocks)
-- **AmneziaWG 2.0** (userspace, с обфускацией)
-- **UFW** (firewall)
+set -euo pipefail
 
-## Требования
+LOG_FILE="/var/log/vpn-setup.log"
 
-- Debian 10+
-- root доступ (sudo)
-- Минимум 512 MB RAM
-- Открытые порты: 22 (SSH), 443, 8443, 2040, 51820
+# Исправление 5: read работает с /dev/tty
+exec > >(tee -a "$LOG_FILE") 2>&1
 
-## Установка
+echo "===== Запуск установки: $(date) ====="
 
-**Вариант 1: One-liner (быстро)**
-```bash
-sudo bash -c "$(curl -L https://raw.githubusercontent.com/Dev-PGVAA/AutoXRAY-AWG-2.0/refs/heads/main/AutoXRay.sh)"
-```
+# Исправление 10: лучшая обработка ошибок
+trap 'echo "❌ Ошибка на строке $LINENO. Смотри лог: $LOG_FILE"; exit 1' ERR
 
-**Вариант 2: Скачать и запустить вручную**
-```bash
-wget https://raw.githubusercontent.com/Dev-PGVAA/AutoXRAY-AWG-2.0/refs/heads/main/AutoXRay.sh
-sudo bash AutoXRAY.sh
-```
+if [[ $EUID -ne 0 ]]; then
+  echo "Запусти от root (sudo bash setup_vpn.sh)"
+  exit 1
+fi
 
-Скрипт автоматически:
-1. **Опционально создаст нового пользователя** (с правами sudo)
-2. Обновит систему и установит необходимые пакеты
-3. Установит и настроит Xray с VLESS+REALITY на портах 443/8443
-4. Установит Shadowsocks на порту 2040 (резервной протокол)
-5. Собери и настроит AmneziaWG 2.0 на порту 51820
-6. Настроит UFW firewall
-7. Выведет готовые конфиги для клиентов
+# Определяем цвета (только для терминала)
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    RESET='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' RESET=''
+fi
 
-**Логирование**: весь процесс пишется в `/var/log/vpn-setup.log`
-```bash
-tail -f /var/log/vpn-setup.log
-```
+# Вспомогательная функция для заголовков секций
+print_section() {
+    echo -e "\n${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "${BOLD}${YELLOW}  $1${RESET}"
+    echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+}
 
-## Конфиги клиентов
+# ============================================================
+# 0. Создание нового пользователя (опционально)
+# ============================================================
+# Исправление 5: read с /dev/tty
+read -p "Создать нового пользователя? (y/n): " -n 1 -r < /dev/tty
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+  read -p "Имя пользователя: " username < /dev/tty
+  if id "$username" &>/dev/null 2>&1; then
+    echo "Пользователь $username уже существует"
+  else
+    useradd -m -s /bin/bash "$username"
+    usermod -aG sudo "$username"
+    echo "Пользователь $username создан с правами sudo"
+    echo "Установи пароль вручную: passwd $username"
+  fi
+fi
 
-После установки скрипт выведет:
-- **VLESS+REALITY (443)** — основной протокол, маскируется под обычный HTTPS
-- **VLESS+REALITY (8443)** — резервной (второй SNI)
-- **Shadowsocks** — запасной вариант
-- **AmneziaWG** — конфиг сохранён в `/etc/amnezia/amneziawg/client_awg.conf`
+echo "=== 1. Обновление и установка необходимых пакетов ==="
+# Исправление 1: добавлен gettext для envsubst
+apt update && apt install -y jq curl wget build-essential make git ufw gettext-base gettext
 
-### Копирование конфигов
+# ============================================================
+# 2. Установка Xray
+# ============================================================
+echo "=== 2. Установка Xray-core ==="
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-```bash
-# VLESS ссылки копируй в приложение (Happ, v2rayNG, Nekoray и т.д.)
-# AmneziaWG конфиг:
-cat /etc/amnezia/amneziawg/client_awg.conf
-```
+SCRIPT_DIR=/usr/local/etc/xray
+mkdir -p "$SCRIPT_DIR"
 
-## Приложения клиентов
+# --- генерация переменных ---
+xray_uuid_vrv=$(xray uuid)
 
-- **iOS**: Happ, v2rayTun, FoXray
-- **Android**: Happ, v2rayTun, v2rayNG
-- **Windows**: Happ, Nekoray, Hiddify, winLoadXRAY
-- **macOS**: Happ, Nekoray
+# Исправление 2: исправлен массив доменов (убрано Markdown-форматирование)
+domains=(
+    www.theregister.com
+    www.20minutes.fr
+    www.dealabs.com
+    www.manomano.fr
+    www.caradisiac.com
+    www.techadvisor.com
+    www.computerworld.com
+    teamdocs.su
+    wikiportal.su
+    docscenter.su
+    www.bing.com
+    github.com
+    tradingview.com
+)
+xray_dest_vrv=${domains[$RANDOM % ${#domains[@]}]}
+xray_dest_vrv222=${domains[$RANDOM % ${#domains[@]}]}
 
-## Файлы конфигов
+key_output=$(xray x25519)
+xray_privateKey_vrv=$(echo "$key_output" | awk -F': ' '/PrivateKey/ {print $2}')
+# Исправление 3: PublicKey вместо Password
+xray_publicKey_vrv=$(echo "$key_output" | awk -F': ' '/PublicKey/ {print $2}')
+xray_shortIds_vrv=$(openssl rand -hex 8)
+xray_sspasw_vrv=$(openssl rand -base64 15 | tr -dc 'A-Za-z0-9' | head -c 20)
 
-```
-/usr/local/etc/xray/config.json        # Xray конфиг
-/etc/amnezia/amneziawg/awg0.conf       # AmneziaWG server
-/etc/amnezia/amneziawg/client_awg.conf # AmneziaWG client
-```
+# Исправление 9: надежное получение IP
+ipserv=$(ip -4 addr show | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
 
-## Управление сервисами
+# Если IP не получен, используем hostname
+if [[ -z "$ipserv" ]]; then
+    ipserv=$(hostname -I | awk '{print $1}')
+fi
 
-```bash
-# Xray
-systemctl status xray
+export xray_uuid_vrv xray_dest_vrv xray_dest_vrv222 xray_privateKey_vrv xray_publicKey_vrv xray_shortIds_vrv xray_sspasw_vrv ipserv
+
+cat << 'EOF' | envsubst > "$SCRIPT_DIR/config.json"
+{
+  "log": {
+    "dnsLog": false,
+    "loglevel": "none"
+  },
+  "dns": {
+    "servers": [
+      "https+local://8.8.4.4/dns-query",
+      "https+local://8.8.8.8/dns-query",
+      "https+local://1.1.1.1/dns-query",
+      "localhost"
+    ],
+    "queryStrategy": "UseIPv4"
+  },
+  "inbounds": [
+    {
+      "tag": "VLESStcpREALITY",
+      "port": 443,
+      "listen": "0.0.0.0",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "flow": "xtls-rprx-vision",
+            "id": "${xray_uuid_vrv}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "xver": 0,
+          "target": "${xray_dest_vrv}:443",
+          "spiderX": "/",
+          "shortIds": ["${xray_shortIds_vrv}"],
+          "privateKey": "${xray_privateKey_vrv}",
+          "serverNames": ["${xray_dest_vrv}"],
+          "limitFallbackUpload": {
+            "afterBytes": 0,
+            "bytesPerSec": 65536,
+            "burstBytesPerSec": 0
+          },
+          "limitFallbackDownload": {
+            "afterBytes": 5242880,
+            "bytesPerSec": 262144,
+            "burstBytesPerSec": 2097152
+          }
+        }
+      }
+    },
+    {
+      "tag": "Vless8443",
+      "port": 8443,
+      "listen": "0.0.0.0",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "flow": "xtls-rprx-vision",
+            "id": "${xray_uuid_vrv}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "xver": 0,
+          "target": "${xray_dest_vrv222}:443",
+          "spiderX": "/",
+          "shortIds": ["${xray_shortIds_vrv}"],
+          "privateKey": "${xray_privateKey_vrv}",
+          "serverNames": ["${xray_dest_vrv222}"],
+          "limitFallbackUpload": {
+            "afterBytes": 0,
+            "bytesPerSec": 65536,
+            "burstBytesPerSec": 0
+          },
+          "limitFallbackDownload": {
+            "afterBytes": 5242880,
+            "bytesPerSec": 262144,
+            "burstBytesPerSec": 2097152
+          }
+        }
+      }
+    },
+    {
+      "tag": "ShadowsocksTCP",
+      "port": 2040,
+      "listen": "0.0.0.0",
+      "protocol": "shadowsocks",
+      "settings": {
+        "clients": [
+          {
+            "password": "${xray_sspasw_vrv}",
+            "method": "chacha20-ietf-poly1305"
+          }
+        ]
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
+      },
+      "streamSettings": {
+        "network": "raw"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": { "domainStrategy": "ForceIPv4" }
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "domain": ["geosite:category-ads", "geosite:win-spy", "geosite:private"],
+        "outboundTag": "block"
+      },
+      {
+        "ip": ["geoip:private"],
+        "outboundTag": "block"
+      }
+    ]
+  }
+}
+EOF
+
+systemctl enable xray
 systemctl restart xray
+echo "Xray готов."
 
-# AmneziaWG
-systemctl status awg-quick@awg0
-systemctl restart awg-quick@awg0
+# ============================================================
+# 3. Firewall (ufw)
+# ============================================================
+echo "=== 3. Настройка firewall ==="
 
-# Firewall
-ufw status
-```
+# Исправление 4: проверка порта 443
+if ss -tlnp | grep -q ':443'; then
+    echo "${YELLOW}⚠️ Порт 443 занят. Проверьте: ss -tlnp | grep 443${RESET}"
+    echo "${YELLOW}Если занят nginx/apache, остановите: systemctl stop nginx apache2${RESET}"
+fi
 
-## Проверка статуса после установки
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow OpenSSH
+ufw allow 443/tcp    comment 'xray vless reality'
+ufw allow 8443/tcp   comment 'xray vless reality 2'
+ufw allow 2040/tcp   comment 'xray shadowsocks'
+ufw --force enable
 
-```bash
-# Смотри последние строки логов
-tail /var/log/vpn-setup.log
+# ============================================================
+# 4. Настройка SSH
+# ============================================================
+echo "=== 4. Настройка SSH ==="
 
-# Проверь что Xray работает
-systemctl is-active xray
+# Исправление 4: замените на действительные публичные ключи
+SSH_PUBKEYS=(
+  "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD действительный_ключ_1 сюда"
+  "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD действительный_ключ_2 сюда"
+  "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD действительный_ключ_3 сюда"
+)
 
-# Проверь что AmneziaWG работает
-ip link show awg0
+# Функция для настройки SSH для конкретного пользователя
+setup_ssh_for_user() {
+  local user_home=$1
+  local user_name=$2
+  
+  mkdir -p "$user_home/.ssh"
+  
+  # Очищаем файл authorized_keys и добавляем ключи
+  > "$user_home/.ssh/authorized_keys"
+  for key in "${SSH_PUBKEYS[@]}"; do
+    echo "$key" >> "$user_home/.ssh/authorized_keys"
+  done
+  
+  # Правильные права доступа
+  chmod 700 "$user_home/.ssh"
+  chmod 600 "$user_home/.ssh/authorized_keys"
+  chown -R "$user_name:$user_name" "$user_home/.ssh"
+  
+  echo "SSH ключи добавлены для пользователя $user_name"
+}
 
-# Проверь firewall
-ufw status numbered
-```
+# Настройка SSH для root и созданного пользователя
+setup_ssh_for_user "/root" "root"
+if [[ ! -z "$username" ]] && [[ "$username" != "root" ]]; then
+  setup_ssh_for_user "/home/$username" "$username"
+fi
 
-## Примечания
+# Настройка sshd_config
+SSHD_CONFIG="/etc/ssh/sshd_config"
 
-- Каждый запуск скрипта генерирует новые ключи и параметры обфускации
-- AmneziaWG требует клиент версии ≥ 4.8.12.7 (поддержка AWG 2.0)
-- Для добавления новых клиентов в AmneziaWG отредактируй `/etc/amnezia/amneziawg/awg0.conf` и добавь новые `[Peer]` секции
-- SSH открыт на порту 22 (не закрывается firewall'ом)
+# Бэкап оригинального конфига
+if [ ! -f "${SSHD_CONFIG}.backup" ]; then
+  cp "$SSHD_CONFIG" "${SSHD_CONFIG}.backup"
+fi
 
-## Troubleshooting
+# Функция для безопасного изменения параметров SSH
+update_ssh_config() {
+  local key=$1
+  local value=$2
+  
+  # Если параметр существует (в том числе закомментированный), обновляем его
+  if grep -q "^#\?${key}\s" "$SSHD_CONFIG"; then
+    sed -i "s/^#\?${key}\s.*/${key} ${value}/" "$SSHD_CONFIG"
+  else
+    # Иначе добавляем в конец файла
+    echo "${key} ${value}" >> "$SSHD_CONFIG"
+  fi
+}
 
-**Ошибка при установке?**
-- Смотри полный лог: `cat /var/log/vpn-setup.log`
-- Скрипт остановится с номером строки где произошла ошибка
-- Убедись что запустил от root: `sudo bash setup_vpn.sh`
+# Настройки безопасности SSH
+update_ssh_config "PermitRootLogin" "prohibit-password"
+update_ssh_config "PubkeyAuthentication" "yes"
+update_ssh_config "PasswordAuthentication" "no"
+update_ssh_config "ChallengeResponseAuthentication" "no"
+update_ssh_config "UsePAM" "yes"
+update_ssh_config "X11Forwarding" "no"
+update_ssh_config "MaxAuthTries" "3"
+update_ssh_config "MaxSessions" "5"
+update_ssh_config "ClientAliveInterval" "300"
+update_ssh_config "ClientAliveCountMax" "2"
 
-**Xray не запускается**
-```bash
-systemctl restart xray
-journalctl -u xray -n 50  # последние 50 строк логов
-```
+# Перезапуск SSH
+systemctl restart sshd
+echo "SSH настроен и перезапущен"
 
-**AmneziaWG не поднялся**
-```bash
-WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go awg-quick up awg0
-journalctl -u awg-quick@awg0 -n 50
-```
+# ============================================================
+# 5. Создание пользовательских конфигов
+# ============================================================
+echo "=== 5. Создание пользовательских конфигов ==="
 
-## Лицензия
+# Исправление 7: вычисляем ss_encoded перед созданием README.txt
+ss_encoded=$(echo -n "chacha20-ietf-poly1305:${xray_sspasw_vrv}" | base64 | tr -d '\n')
 
-[MIT](./LICENSE)
+# Создаем конфигурационные файлы для клиентов
+CONFIG_DIR="$SCRIPT_DIR/client_configs"
+mkdir -p "$CONFIG_DIR"
+
+# VLESS 443 клиентский конфиг (JSON для Xray клиента)
+cat << EOF > "$CONFIG_DIR/vless_443_client.json"
+{
+  "inbounds": [{
+    "port": 10808,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": {
+      "udp": true
+    }
+  }],
+  "outbounds": [{
+    "protocol": "vless",
+    "settings": {
+      "vnext": [{
+        "address": "${ipserv}",
+        "port": 443,
+        "users": [{
+          "id": "${xray_uuid_vrv}",
+          "flow": "xtls-rprx-vision",
+          "encryption": "none"
+        }]
+      }]
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "reality",
+      "realitySettings": {
+        "serverName": "${xray_dest_vrv}",
+        "fingerprint": "chrome",
+        "publicKey": "${xray_publicKey_vrv}",
+        "shortId": "${xray_shortIds_vrv}",
+        "spiderX": "/"
+      }
+    }
+  }]
+}
+EOF
+
+# VLESS 8443 клиентский конфиг
+cat << EOF > "$CONFIG_DIR/vless_8443_client.json"
+{
+  "inbounds": [{
+    "port": 10809,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": {
+      "udp": true
+    }
+  }],
+  "outbounds": [{
+    "protocol": "vless",
+    "settings": {
+      "vnext": [{
+        "address": "${ipserv}",
+        "port": 8443,
+        "users": [{
+          "id": "${xray_uuid_vrv}",
+          "flow": "xtls-rprx-vision",
+          "encryption": "none"
+        }]
+      }]
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "reality",
+      "realitySettings": {
+        "serverName": "${xray_dest_vrv222}",
+        "fingerprint": "chrome",
+        "publicKey": "${xray_publicKey_vrv}",
+        "shortId": "${xray_shortIds_vrv}",
+        "spiderX": "/"
+      }
+    }
+  }]
+}
+EOF
+
+# Shadowsocks клиентский конфиг
+cat << EOF > "$CONFIG_DIR/shadowsocks_client.json"
+{
+  "inbounds": [{
+    "port": 10810,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": {
+      "udp": true
+    }
+  }],
+  "outbounds": [{
+    "protocol": "shadowsocks",
+    "settings": {
+      "servers": [{
+        "address": "${ipserv}",
+        "port": 2040,
+        "method": "chacha20-ietf-poly1305",
+        "password": "${xray_sspasw_vrv}"
+      }]
+    }
+  }]
+}
+EOF
+
+# Создаем файл с информацией о всех конфигурациях
+# Исправление 7: ss_encoded теперь определен
+cat << EOF > "$CONFIG_DIR/README.txt"
+===========================================
+VPN Конфигурации
+Сервер IP: ${ipserv}
+Дата установки: $(date)
+===========================================
+
+1. VLESS + REALITY (Порт 443) - Основной
+   Ссылка: vless://${xray_uuid_vrv}@${ipserv}:443?security=reality&sni=${xray_dest_vrv}&fp=chrome&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&type=tcp&flow=xtls-rprx-vision&encryption=none&spx=%2F#VPN-443
+   Конфиг файл: vless_443_client.json
+
+2. VLESS + REALITY (Порт 8443) - Резервный
+   Ссылка: vless://${xray_uuid_vrv}@${ipserv}:8443?security=reality&sni=${xray_dest_vrv222}&fp=chrome&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&type=tcp&flow=xtls-rprx-vision&encryption=none&spx=%2F#VPN-8443
+   Конфиг файл: vless_8443_client.json
+
+3. Shadowsocks (Порт 2040) - Резервный
+   Ссылка: ss://${ss_encoded}@${ipserv}:2040#VPN-2040
+   Конфиг файл: shadowsocks_client.json
+
+SSH Конфигурация:
+- Парольная аутентификация отключена
+- Доступ только по SSH-ключам
+- Root доступ: только по ключам
+- Конфиг файл SSH: ${SSHD_CONFIG}.backup (оригинал)
+===========================================
+EOF
+
+# ============================================================
+# 6. Красивый вывод итоговой информации
+# ============================================================
+echo -e "${BOLD}${GREEN}╔════════════════════════════════════════════╗${RESET}"
+echo -e "${BOLD}${GREEN}║   🚀 VPN & SSH SETUP COMPLETED SUCCESSFULLY   ║${RESET}"
+echo -e "${BOLD}${GREEN}╚════════════════════════════════════════════╝${RESET}"
+
+print_section "🔑 SSH AUTHORIZED KEYS"
+for i in "${!SSH_PUBKEYS[@]}"; do
+    printf "${CYAN}  Key %d:${RESET} ${GREEN}%s...${RESET}\n" $((i+1)) "${SSH_PUBKEYS[$i]:0:40}"
+done
+
+print_section "🌐 VPN CONFIGURATIONS"
+
+echo -e "${BOLD}${GREEN}  VLESS + REALITY (Primary port 443)${RESET}"
+echo -e "${CYAN}  vless://${xray_uuid_vrv}@${ipserv}:443?security=reality&sni=${xray_dest_vrv}&fp=chrome&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&type=tcp&flow=xtls-rprx-vision&encryption=none&spx=%2F#VPN-443${RESET}"
+
+echo -e "\n${BOLD}${GREEN}  VLESS + REALITY (Backup port 8443)${RESET}"
+echo -e "${CYAN}  vless://${xray_uuid_vrv}@${ipserv}:8443?security=reality&sni=${xray_dest_vrv222}&fp=chrome&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&type=tcp&flow=xtls-rprx-vision&encryption=none&spx=%2F#VPN-8443${RESET}"
+
+echo -e "\n${BOLD}${GREEN}  Shadowsocks (Backup port 2040)${RESET}"
+echo -e "${CYAN}  ss://${ss_encoded}@${ipserv}:2040#VPN-2040${RESET}"
+
+print_section "📁 CLIENT CONFIG FILES"
+echo -e "${GREEN}  Directory: ${CONFIG_DIR}${RESET}"
+echo -e "${GREEN}  Readme:    ${CONFIG_DIR}/README.txt${RESET}"
+
+print_section "⚠️ IMPORTANT CHECKLIST"
+echo -e "${YELLOW}  1. Замените SSH_PUBKEYS на действительные ключи${RESET}"
+echo -e "${YELLOW}  2. Проверьте что порт 443 свободен (ss -tlnp | grep 443)${RESET}"
+echo -e "${YELLOW}  3. Если порт 443 занят - остановите nginx/apache${RESET}"
+echo -e "${YELLOW}  4. Проверьте сервис Xray: systemctl status xray${RESET}"
+echo -e "${YELLOW}  5. Лог установки: $LOG_FILE${RESET}"
