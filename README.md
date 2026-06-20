@@ -16,13 +16,13 @@
 
 **Вариант 1: One-liner (быстро)**
 ```bash
-sudo bash -c "$(curl -L https://raw.githubusercontent.com/Dev-PGVAA/AutoXRAY-AWG-2.0/refs/heads/main/AutoXRay.sh)"
+bash -c "$(curl -L https://raw.githubusercontent.com/Dev-PGVAA/AutoXRAY-AWG-2.0/refs/heads/main/AutoXRay.sh)"
 ```
 
 **Вариант 2: Скачать и запустить вручную**
 ```bash
 wget https://raw.githubusercontent.com/Dev-PGVAA/AutoXRAY-AWG-2.0/refs/heads/main/AutoXRay.sh
-sudo bash AutoXRAY.sh
+bash AutoXRAY.sh
 ```
 
 Скрипт автоматически:
